@@ -20,9 +20,9 @@ import { SlackNotificationProcessor } from './SlackNotificationProcessor';
 import { catalogServiceMock } from '@backstage/plugin-catalog-node/testUtils';
 import { KnownBlock, WebClient } from '@slack/web-api';
 import { Entity } from '@backstage/catalog-model';
-import { Knex } from 'knex';
 import pThrottle from 'p-throttle';
 import { durationToMilliseconds } from '@backstage/types';
+import { TimestampStore } from './types';
 
 const throttleConfigs: Array<{ limit: number; interval: number }> = [];
 
@@ -1623,77 +1623,28 @@ describe('SlackNotificationProcessor', () => {
   });
 
   describe('scope-based message updates', () => {
-    function createMockDb() {
-      const store = new Map<
-        string,
-        {
-          origin: string;
-          scope: string;
-          channel: string;
-          ts: string;
-          created_at: Date;
-        }
-      >();
+    function createMockTimestampStore() {
+      const store = new Map<string, string>();
 
-      function storeKey(origin: string, scope: string, channel: string) {
+      function key(origin: string, scope: string, channel: string) {
         return `${origin}:${scope}:${channel}`;
       }
 
-      // Each call to db() creates a fresh query builder that tracks its own
-      // chained .where()/.insert() arguments, avoiding cross-call interference.
-      function createQueryBuilder(): any {
-        let lastWhereArgs: any;
-        let lastInsertRow: any;
-        const qb: any = {
-          where: jest.fn().mockImplementation((args: any) => {
-            lastWhereArgs = args;
-            return qb;
-          }),
-          first: jest.fn().mockImplementation(() => {
-            if (lastWhereArgs) {
-              const key = storeKey(
-                lastWhereArgs.origin,
-                lastWhereArgs.scope,
-                lastWhereArgs.channel,
-              );
-              return Promise.resolve(store.get(key));
-            }
-            return Promise.resolve(undefined);
-          }),
-          insert: jest.fn().mockImplementation((row: any) => {
-            lastInsertRow = row;
-            store.set(storeKey(row.origin, row.scope, row.channel), row);
-            return qb;
-          }),
-          onConflict: jest.fn().mockReturnThis(),
-          merge: jest.fn().mockImplementation((row: any) => {
-            if (lastInsertRow) {
-              const key = storeKey(
-                lastInsertRow.origin,
-                lastInsertRow.scope,
-                lastInsertRow.channel,
-              );
-              const existing = store.get(key);
-              if (existing) {
-                store.set(key, { ...existing, ...row });
-              }
-            }
-            return Promise.resolve();
-          }),
-          delete: jest.fn().mockResolvedValue(0),
-        };
-        return qb;
-      }
+      const timestampStore: TimestampStore = {
+        get: jest.fn(async (origin, scope, channel) =>
+          store.get(key(origin, scope, channel)),
+        ),
+        set: jest.fn(async (origin, scope, channel, ts) => {
+          store.set(key(origin, scope, channel), ts);
+        }),
+      };
 
-      const db = jest
-        .fn()
-        .mockImplementation(() => createQueryBuilder()) as unknown as Knex;
-      return { db, store, storeKey };
+      return { timestampStore, store, key };
     }
 
-    function createProcessorWithDb(
+    function createProcessorWithStore(
       slack: WebClient,
-      db: Knex,
+      timestampStore: TimestampStore,
     ): SlackNotificationProcessor {
       const processor = SlackNotificationProcessor.fromConfig(config, {
         auth,
@@ -1704,14 +1655,14 @@ describe('SlackNotificationProcessor', () => {
         metrics,
         slack,
       })[0];
-      processor.setDatabase(db);
+      processor.setTimestampStore(timestampStore);
       return processor;
     }
 
     it('should store the message timestamp after initial scoped send', async () => {
       const slack = new WebClient();
-      const { db, store, storeKey } = createMockDb();
-      const processor = createProcessorWithDb(slack, db);
+      const { timestampStore, store, key } = createMockTimestampStore();
+      const processor = createProcessorWithStore(slack, timestampStore);
 
       await processor.postProcess(
         {
@@ -1735,38 +1686,24 @@ describe('SlackNotificationProcessor', () => {
 
       expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
       expect(store.size).toBe(1);
-      const key = storeKey(
-        'plugin',
-        'deployment-failure/my-service/42',
-        'U12345678',
-      );
-      expect(store.get(key)).toEqual(
-        expect.objectContaining({
-          origin: 'plugin',
-          scope: 'deployment-failure/my-service/42',
-          channel: 'U12345678',
-          ts: '1234567890.123456',
-        }),
-      );
+      expect(
+        store.get(
+          key('plugin', 'deployment-failure/my-service/42', 'U12345678'),
+        ),
+      ).toBe('1234567890.123456');
     });
 
     it('should use chat.update when the notification has been updated and a stored ts exists', async () => {
       const slack = new WebClient();
-      const { db, store, storeKey } = createMockDb();
+      const { timestampStore, store, key } = createMockTimestampStore();
 
       // Pre-populate the store with a previously sent message.
       store.set(
-        storeKey('plugin', 'deployment-failure/my-service/42', 'U12345678'),
-        {
-          origin: 'plugin',
-          scope: 'deployment-failure/my-service/42',
-          channel: 'U12345678',
-          ts: '1111111111.111111',
-          created_at: new Date(),
-        },
+        key('plugin', 'deployment-failure/my-service/42', 'U12345678'),
+        '1111111111.111111',
       );
 
-      const processor = createProcessorWithDb(slack, db);
+      const processor = createProcessorWithStore(slack, timestampStore);
 
       await processor.postProcess(
         {
@@ -1805,8 +1742,8 @@ describe('SlackNotificationProcessor', () => {
 
     it('should fall back to chat.postMessage when notification is updated but no stored ts exists', async () => {
       const slack = new WebClient();
-      const { db } = createMockDb();
-      const processor = createProcessorWithDb(slack, db);
+      const { timestampStore } = createMockTimestampStore();
+      const processor = createProcessorWithStore(slack, timestampStore);
 
       await processor.postProcess(
         {
@@ -1834,10 +1771,10 @@ describe('SlackNotificationProcessor', () => {
       expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
     });
 
-    it('should not interact with the database for non-scoped notifications', async () => {
+    it('should not interact with the store for non-scoped notifications', async () => {
       const slack = new WebClient();
-      const { db } = createMockDb();
-      const processor = createProcessorWithDb(slack, db);
+      const { timestampStore } = createMockTimestampStore();
+      const processor = createProcessorWithStore(slack, timestampStore);
 
       await processor.postProcess(
         {
@@ -1856,14 +1793,14 @@ describe('SlackNotificationProcessor', () => {
       );
 
       expect(slack.chat.postMessage).toHaveBeenCalledTimes(1);
-      // The db function should not have been called since there is no scope.
-      expect(db).not.toHaveBeenCalled();
+      expect(timestampStore.get).not.toHaveBeenCalled();
+      expect(timestampStore.set).not.toHaveBeenCalled();
     });
 
-    it('should work without a database (graceful degradation)', async () => {
+    it('should work without a timestamp store (graceful degradation)', async () => {
       const slack = new WebClient();
 
-      // No db set — the processor should still send messages normally.
+      // No store set — the processor should still send messages normally.
       const processor = SlackNotificationProcessor.fromConfig(config, {
         auth,
         logger,
@@ -1900,25 +1837,13 @@ describe('SlackNotificationProcessor', () => {
 
     it('should handle concurrent postProcess calls with different scopes correctly', async () => {
       const slack = new WebClient();
-      const { db, store, storeKey } = createMockDb();
+      const { timestampStore, store, key } = createMockTimestampStore();
 
       // Pre-populate stored timestamps for both scopes.
-      store.set(storeKey('plugin', 'scope-a', 'U12345678'), {
-        origin: 'plugin',
-        scope: 'scope-a',
-        channel: 'U12345678',
-        ts: '1111111111.111111',
-        created_at: new Date(),
-      });
-      store.set(storeKey('plugin', 'scope-b', 'U12345678'), {
-        origin: 'plugin',
-        scope: 'scope-b',
-        channel: 'U12345678',
-        ts: '2222222222.222222',
-        created_at: new Date(),
-      });
+      store.set(key('plugin', 'scope-a', 'U12345678'), '1111111111.111111');
+      store.set(key('plugin', 'scope-b', 'U12345678'), '2222222222.222222');
 
-      const processor = createProcessorWithDb(slack, db);
+      const processor = createProcessorWithStore(slack, timestampStore);
 
       // Fire both postProcess calls concurrently with different scopes.
       await Promise.all([
@@ -1964,18 +1889,15 @@ describe('SlackNotificationProcessor', () => {
 
     it('should not collide across different origins with the same scope', async () => {
       const slack = new WebClient();
-      const { db, store, storeKey } = createMockDb();
+      const { timestampStore, store, key } = createMockTimestampStore();
 
       // Pre-populate a stored timestamp for origin-a only.
-      store.set(storeKey('origin-a', 'shared-scope', 'U12345678'), {
-        origin: 'origin-a',
-        scope: 'shared-scope',
-        channel: 'U12345678',
-        ts: '1111111111.111111',
-        created_at: new Date(),
-      });
+      store.set(
+        key('origin-a', 'shared-scope', 'U12345678'),
+        '1111111111.111111',
+      );
 
-      const processor = createProcessorWithDb(slack, db);
+      const processor = createProcessorWithStore(slack, timestampStore);
 
       // Send an update from origin-b with the same scope — should NOT find
       // the stored ts from origin-a, and should fall back to postMessage.

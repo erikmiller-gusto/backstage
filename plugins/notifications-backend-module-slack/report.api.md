@@ -4,12 +4,31 @@
 
 ```ts
 import { BackendFeature } from '@backstage/backend-plugin-api';
+import { CacheService } from '@backstage/backend-plugin-api';
 import { ExtensionPoint } from '@backstage/backend-plugin-api';
 import { KnownBlock } from '@slack/web-api';
 import { NotificationPayload } from '@backstage/plugin-notifications-common';
 
 // @public
 export const ANNOTATION_SLACK_BOT_NOTIFY = 'slack.com/bot-notify';
+
+// @public
+export class CacheTimestampStore implements TimestampStore {
+  constructor(cache: CacheService);
+  // (undocumented)
+  get(
+    origin: string,
+    scope: string,
+    channel: string,
+  ): Promise<string | undefined>;
+  // (undocumented)
+  set(
+    origin: string,
+    scope: string,
+    channel: string,
+    ts: string,
+  ): Promise<void>;
+}
 
 // @public
 const notificationsModuleSlack: BackendFeature;
@@ -24,8 +43,34 @@ export interface NotificationsSlackBlockKitExtensionPoint {
 // @public (undocumented)
 export const notificationsSlackBlockKitExtensionPoint: ExtensionPoint<NotificationsSlackBlockKitExtensionPoint>;
 
+// @public
+export interface NotificationsSlackTimestampStoreExtensionPoint {
+  // (undocumented)
+  setTimestampStore(store: TimestampStore): void;
+}
+
+// @public (undocumented)
+export const notificationsSlackTimestampStoreExtensionPoint: ExtensionPoint<NotificationsSlackTimestampStoreExtensionPoint>;
+
 // @public (undocumented)
 export type SlackBlockKitRenderer = (
   payload: NotificationPayload,
 ) => KnownBlock[];
+
+// @public
+export interface TimestampStore {
+  // (undocumented)
+  get(
+    origin: string,
+    scope: string,
+    channel: string,
+  ): Promise<string | undefined>;
+  // (undocumented)
+  set(
+    origin: string,
+    scope: string,
+    channel: string,
+    ts: string,
+  ): Promise<void>;
+}
 ```

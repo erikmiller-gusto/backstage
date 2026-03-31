@@ -20,6 +20,27 @@ export interface SlackNotificationOptions {
 }
 
 /**
+ * Abstraction over the persistence layer for Slack message timestamps.
+ * Used by the processor to look up and store message `ts` values
+ * for scope-based message updates.
+ *
+ * @public
+ */
+export interface TimestampStore {
+  get(
+    origin: string,
+    scope: string,
+    channel: string,
+  ): Promise<string | undefined>;
+  set(
+    origin: string,
+    scope: string,
+    channel: string,
+    ts: string,
+  ): Promise<void>;
+}
+
+/**
  * Configuration for routing broadcast notifications to specific Slack channels
  * based on origin and/or topic.
  */

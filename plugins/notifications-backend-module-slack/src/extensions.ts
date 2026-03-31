@@ -16,6 +16,7 @@
 import { createExtensionPoint } from '@backstage/backend-plugin-api';
 import { NotificationPayload } from '@backstage/plugin-notifications-common';
 import { KnownBlock } from '@slack/web-api';
+import { TimestampStore } from './lib/types';
 
 /**
  * @public
@@ -40,4 +41,25 @@ export interface NotificationsSlackBlockKitExtensionPoint {
 export const notificationsSlackBlockKitExtensionPoint =
   createExtensionPoint<NotificationsSlackBlockKitExtensionPoint>({
     id: 'notifications.slack.blockkit',
+  });
+
+/**
+ * @public
+ *
+ * Extension point for providing a custom persistence backend for Slack
+ * message timestamps used in scope-based message updates.
+ *
+ * If no custom store is provided, the module defaults to using the
+ * CacheTimestampStore backed by the Backstage CacheService.
+ */
+export interface NotificationsSlackTimestampStoreExtensionPoint {
+  setTimestampStore(store: TimestampStore): void;
+}
+
+/**
+ * @public
+ */
+export const notificationsSlackTimestampStoreExtensionPoint =
+  createExtensionPoint<NotificationsSlackTimestampStoreExtensionPoint>({
+    id: 'notifications.slack.timestampstore',
   });

@@ -21,5 +21,7 @@
  */
 
 export { ANNOTATION_SLACK_BOT_NOTIFY } from './lib';
+export type { TimestampStore } from './lib';
+export { CacheTimestampStore } from './lib';
 export { notificationsModuleSlack as default } from './module';
 export * from './extensions';

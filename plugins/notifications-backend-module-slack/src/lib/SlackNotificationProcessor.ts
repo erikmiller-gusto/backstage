@@ -40,10 +40,9 @@ import {
   WebClient,
 } from '@slack/web-api';
 import DataLoader from 'dataloader';
-import { Knex } from 'knex';
 import pThrottle from 'p-throttle';
 import { ANNOTATION_SLACK_BOT_NOTIFY } from './constants';
-import { BroadcastRoute } from './types';
+import { BroadcastRoute, TimestampStore } from './types';
 import { ExpiryMap, toChatPostMessageArgs } from './util';
 import { CatalogService } from '@backstage/plugin-catalog-node';
 import { SlackBlockKitRenderer } from '../extensions';
@@ -66,7 +65,7 @@ export class SlackNotificationProcessor implements NotificationProcessor {
   private readonly messagesSent: MetricsServiceCounter;
   private readonly messagesFailed: MetricsServiceCounter;
   private readonly messagesUpdated: MetricsServiceCounter;
-  private db?: Knex;
+  private timestampStore?: TimestampStore;
   private readonly broadcastChannels?: string[];
   private readonly broadcastRoutes?: BroadcastRoute[];
   private readonly entityLoader: DataLoader<string, Entity | undefined>;
@@ -243,8 +242,8 @@ export class SlackNotificationProcessor implements NotificationProcessor {
     };
   }
 
-  setDatabase(db: Knex): void {
-    this.db = db;
+  setTimestampStore(store: TimestampStore): void {
+    this.timestampStore = store;
   }
 
   getName(): string {
@@ -482,8 +481,18 @@ export class SlackNotificationProcessor implements NotificationProcessor {
 
     // If this is a scoped update, try to update the existing Slack message.
     const origin = scopeContext?.origin;
-    if (scopeContext?.isUpdate && origin && scope && this.db) {
-      const storedTs = await this.getStoredTimestamp(origin, scope, channel);
+    if (scopeContext?.isUpdate && origin && scope && this.timestampStore) {
+      let storedTs: string | undefined;
+      try {
+        storedTs = await this.timestampStore.get(origin, scope, channel);
+      } catch (error) {
+        this.logger.warn('Failed to look up stored Slack message timestamp', {
+          origin,
+          scope,
+          channel,
+          error,
+        });
+      }
       if (storedTs) {
         const updateArgs = {
           channel,
@@ -512,53 +521,20 @@ export class SlackNotificationProcessor implements NotificationProcessor {
     }
 
     // Persist the message timestamp for future scope-based updates.
-    if (origin && scope && response.ts && this.db) {
-      await this.saveTimestamp(origin, scope, channel, response.ts);
+    if (origin && scope && response.ts && this.timestampStore) {
+      try {
+        await this.timestampStore.set(origin, scope, channel, response.ts);
+      } catch (error) {
+        this.logger.warn('Failed to persist Slack message timestamp', {
+          origin,
+          scope,
+          channel,
+          error,
+        });
+      }
     }
 
     return 'sent';
-  }
-
-  private async getStoredTimestamp(
-    origin: string,
-    scope: string,
-    channel: string,
-  ): Promise<string | undefined> {
-    try {
-      const row = await this.db!('slack_message_timestamps')
-        .where({ origin, scope, channel })
-        .first();
-      return row?.ts;
-    } catch (error) {
-      this.logger.warn('Failed to look up stored Slack message timestamp', {
-        origin,
-        scope,
-        channel,
-        error,
-      });
-      return undefined;
-    }
-  }
-
-  private async saveTimestamp(
-    origin: string,
-    scope: string,
-    channel: string,
-    ts: string,
-  ): Promise<void> {
-    try {
-      await this.db!('slack_message_timestamps')
-        .insert({ origin, scope, channel, ts, created_at: new Date() })
-        .onConflict(['origin', 'scope', 'channel'])
-        .merge({ ts, created_at: new Date() });
-    } catch (error) {
-      this.logger.warn('Failed to persist Slack message timestamp', {
-        origin,
-        scope,
-        channel,
-        error,
-      });
-    }
   }
 
   private static parseBroadcastRoute(route: Config): BroadcastRoute {

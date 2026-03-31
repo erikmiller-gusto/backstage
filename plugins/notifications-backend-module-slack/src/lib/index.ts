@@ -16,3 +16,5 @@
 
 export { SlackNotificationProcessor } from './SlackNotificationProcessor';
 export * from './constants';
+export type { TimestampStore } from './types';
+export { CacheTimestampStore } from './CacheTimestampStore';
